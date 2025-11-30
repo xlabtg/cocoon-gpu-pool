@@ -1,0 +1,251 @@
+;; PoolOperator Contract
+;; Manages the registration of the pool in the Cocoon network
+
+#include "stdlib.fc";
+
+;; Storage structure:
+;; operator_address - address of the pool operator
+;; commission_rate - commission percentage (5-15%, stored as basis points, e.g., 500 = 5%)
+;; operator_stake - amount staked by operator for reliability guarantee
+;; pool_status - 0 = inactive, 1 = active
+;; registry_address - address of ParticipantRegistry contract
+;; distribution_address - address of RewardDistribution contract
+;; min_commission - minimum allowed commission (500 = 5%)
+;; max_commission - maximum allowed commission (1500 = 15%)
+
+const int MIN_COMMISSION = 500;    ;; 5%
+const int MAX_COMMISSION = 1500;   ;; 15%
+const int MIN_OPERATOR_STAKE = 100000000000; ;; 100 TON (in nanotons)
+
+;; Error codes
+const int ERROR_UNAUTHORIZED = 401;
+const int ERROR_INVALID_COMMISSION = 402;
+const int ERROR_INSUFFICIENT_STAKE = 403;
+const int ERROR_POOL_INACTIVE = 404;
+const int ERROR_INVALID_ADDRESS = 405;
+const int ERROR_ALREADY_INITIALIZED = 406;
+
+;; Operation codes
+const int OP_INITIALIZE = 1;
+const int OP_SET_COMMISSION = 2;
+const int OP_ADD_STAKE = 3;
+const int OP_ACTIVATE_POOL = 4;
+const int OP_DEACTIVATE_POOL = 5;
+const int OP_WITHDRAW_STAKE = 6;
+const int OP_RECEIVE_REWARD = 7;
+const int OP_SET_REGISTRY = 8;
+const int OP_SET_DISTRIBUTION = 9;
+
+;; Storage management
+(slice, int, int, int, slice, slice) load_data() inline {
+    slice ds = get_data().begin_parse();
+    return (
+        ds~load_msg_addr(),  ;; operator_address
+        ds~load_uint(16),    ;; commission_rate
+        ds~load_coins(),     ;; operator_stake
+        ds~load_uint(1),     ;; pool_status
+        ds~load_msg_addr(),  ;; registry_address
+        ds~load_msg_addr()   ;; distribution_address
+    );
+}
+
+() save_data(slice operator_address, int commission_rate, int operator_stake, int pool_status, slice registry_address, slice distribution_address) impure inline {
+    set_data(
+        begin_cell()
+            .store_slice(operator_address)
+            .store_uint(commission_rate, 16)
+            .store_coins(operator_stake)
+            .store_uint(pool_status, 1)
+            .store_slice(registry_address)
+            .store_slice(distribution_address)
+            .end_cell()
+    );
+}
+
+;; Helper functions
+() require_operator(slice sender, slice operator) impure inline {
+    throw_unless(ERROR_UNAUTHORIZED, equal_slices(sender, operator));
+}
+
+() require_valid_commission(int commission_rate) impure inline {
+    throw_unless(ERROR_INVALID_COMMISSION,
+        (commission_rate >= MIN_COMMISSION) & (commission_rate <= MAX_COMMISSION));
+}
+
+() require_active_pool(int pool_status) impure inline {
+    throw_unless(ERROR_POOL_INACTIVE, pool_status == 1);
+}
+
+;; Send message helper
+() send_message(slice to_address, int amount, int mode, cell body) impure inline {
+    var msg = begin_cell()
+        .store_uint(0x18, 6)
+        .store_slice(to_address)
+        .store_coins(amount)
+        .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+        .store_ref(body)
+        .end_cell();
+    send_raw_message(msg, mode);
+}
+
+;; Initialize the contract
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) {
+        return (); ;; ignore empty messages
+    }
+
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    slice sender_address = cs~load_msg_addr();
+
+    int op = in_msg_body~load_uint(32);
+
+    if (op == OP_INITIALIZE) {
+        ;; Check if already initialized
+        slice ds = get_data().begin_parse();
+        if (~ ds.slice_empty?()) {
+            throw(ERROR_ALREADY_INITIALIZED);
+        }
+
+        int commission_rate = in_msg_body~load_uint(16);
+        require_valid_commission(commission_rate);
+
+        ;; Check minimum stake
+        throw_unless(ERROR_INSUFFICIENT_STAKE, msg_value >= MIN_OPERATOR_STAKE);
+
+        ;; Initialize with empty registry and distribution addresses
+        slice empty_addr = begin_cell().store_uint(0, 2).end_cell().begin_parse();
+        save_data(sender_address, commission_rate, msg_value, 0, empty_addr, empty_addr);
+        return ();
+    }
+
+    ;; Load data for all other operations
+    (slice operator_address, int commission_rate, int operator_stake, int pool_status, slice registry_address, slice distribution_address) = load_data();
+
+    if (op == OP_SET_COMMISSION) {
+        require_operator(sender_address, operator_address);
+        int new_commission = in_msg_body~load_uint(16);
+        require_valid_commission(new_commission);
+        save_data(operator_address, new_commission, operator_stake, pool_status, registry_address, distribution_address);
+        return ();
+    }
+
+    if (op == OP_ADD_STAKE) {
+        require_operator(sender_address, operator_address);
+        operator_stake += msg_value;
+        save_data(operator_address, commission_rate, operator_stake, pool_status, registry_address, distribution_address);
+        return ();
+    }
+
+    if (op == OP_ACTIVATE_POOL) {
+        require_operator(sender_address, operator_address);
+        throw_unless(ERROR_INSUFFICIENT_STAKE, operator_stake >= MIN_OPERATOR_STAKE);
+
+        ;; Verify registry and distribution are set
+        int registry_set = registry_address.slice_bits() > 2;
+        int distribution_set = distribution_address.slice_bits() > 2;
+        throw_unless(ERROR_INVALID_ADDRESS, registry_set & distribution_set);
+
+        save_data(operator_address, commission_rate, operator_stake, 1, registry_address, distribution_address);
+        return ();
+    }
+
+    if (op == OP_DEACTIVATE_POOL) {
+        require_operator(sender_address, operator_address);
+        save_data(operator_address, commission_rate, operator_stake, 0, registry_address, distribution_address);
+        return ();
+    }
+
+    if (op == OP_WITHDRAW_STAKE) {
+        require_operator(sender_address, operator_address);
+
+        ;; Can only withdraw if pool is inactive
+        throw_if(ERROR_POOL_INACTIVE, pool_status == 1);
+
+        int withdraw_amount = in_msg_body~load_coins();
+        throw_unless(ERROR_INSUFFICIENT_STAKE, withdraw_amount <= operator_stake);
+
+        ;; Ensure minimum stake remains
+        int remaining = operator_stake - withdraw_amount;
+
+        operator_stake = remaining;
+        save_data(operator_address, commission_rate, operator_stake, pool_status, registry_address, distribution_address);
+
+        ;; Send withdrawal
+        var msg = begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(sender_address)
+            .store_coins(withdraw_amount)
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .end_cell();
+        send_raw_message(msg, 1);
+        return ();
+    }
+
+    if (op == OP_RECEIVE_REWARD) {
+        ;; Accept rewards from Cocoon network
+        require_active_pool(pool_status);
+        accept_message();
+
+        ;; Forward rewards to RewardDistribution contract
+        cell forward_body = begin_cell()
+            .store_uint(OP_RECEIVE_REWARD, 32)
+            .store_coins(msg_value)
+            .store_uint(commission_rate, 16)
+            .end_cell();
+
+        send_message(distribution_address, msg_value, 1, forward_body);
+        return ();
+    }
+
+    if (op == OP_SET_REGISTRY) {
+        require_operator(sender_address, operator_address);
+        slice new_registry = in_msg_body~load_msg_addr();
+        save_data(operator_address, commission_rate, operator_stake, pool_status, new_registry, distribution_address);
+        return ();
+    }
+
+    if (op == OP_SET_DISTRIBUTION) {
+        require_operator(sender_address, operator_address);
+        slice new_distribution = in_msg_body~load_msg_addr();
+        save_data(operator_address, commission_rate, operator_stake, pool_status, registry_address, new_distribution);
+        return ();
+    }
+
+    throw(0xffff); ;; unknown operation
+}
+
+;; Get methods
+int get_pool_status() method_id {
+    (slice operator_address, int commission_rate, int operator_stake, int pool_status, slice registry_address, slice distribution_address) = load_data();
+    return pool_status;
+}
+
+int get_commission_rate() method_id {
+    (slice operator_address, int commission_rate, int operator_stake, int pool_status, slice registry_address, slice distribution_address) = load_data();
+    return commission_rate;
+}
+
+int get_operator_stake() method_id {
+    (slice operator_address, int commission_rate, int operator_stake, int pool_status, slice registry_address, slice distribution_address) = load_data();
+    return operator_stake;
+}
+
+slice get_operator_address() method_id {
+    (slice operator_address, int commission_rate, int operator_stake, int pool_status, slice registry_address, slice distribution_address) = load_data();
+    return operator_address;
+}
+
+slice get_registry_address() method_id {
+    (slice operator_address, int commission_rate, int operator_stake, int pool_status, slice registry_address, slice distribution_address) = load_data();
+    return registry_address;
+}
+
+slice get_distribution_address() method_id {
+    (slice operator_address, int commission_rate, int operator_stake, int pool_status, slice registry_address, slice distribution_address) = load_data();
+    return distribution_address;
+}
+
+(slice, int, int, int, slice, slice) get_pool_data() method_id {
+    return load_data();
+}

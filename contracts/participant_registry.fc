@@ -1,0 +1,355 @@
+;; ParticipantRegistry Contract
+;; Tracks the contribution of each participant (running time, GPU performance)
+
+#include "stdlib.fc";
+
+;; Storage structure:
+;; operator_address - address of the PoolOperator
+;; total_participants - total number of registered participants
+;; participants_dict - dictionary of participant data (key: address hash, value: participant data)
+;; min_participant_stake - minimum stake required to participate
+
+const int MIN_PARTICIPANT_STAKE = 10000000000; ;; 10 TON (in nanotons)
+const int UPTIME_PRECISION = 10000; ;; 100.00% = 10000
+
+;; Error codes
+const int ERROR_UNAUTHORIZED = 401;
+const int ERROR_INSUFFICIENT_STAKE = 403;
+const int ERROR_PARTICIPANT_EXISTS = 407;
+const int ERROR_PARTICIPANT_NOT_FOUND = 408;
+const int ERROR_INVALID_UPTIME = 409;
+
+;; Operation codes
+const int OP_INITIALIZE = 1;
+const int OP_REGISTER_PARTICIPANT = 10;
+const int OP_UNREGISTER_PARTICIPANT = 11;
+const int OP_UPDATE_METRICS = 12;
+const int OP_ADD_PARTICIPANT_STAKE = 13;
+const int OP_WITHDRAW_PARTICIPANT_STAKE = 14;
+
+;; Participant data structure (stored in dictionary):
+;; stake_amount (coins)
+;; running_time (uint64) - total seconds of operation
+;; gpu_performance_score (uint32) - normalized GPU performance score (0-1000000)
+;; uptime_percentage (uint32) - uptime percentage * 100 (e.g., 9500 = 95.00%)
+;; outage_count (uint16) - number of outages in current period
+;; last_update_time (uint32) - timestamp of last metric update
+;; registration_time (uint32) - timestamp of registration
+
+;; Storage management
+(slice, int, cell) load_data() inline {
+    slice ds = get_data().begin_parse();
+    return (
+        ds~load_msg_addr(),  ;; operator_address
+        ds~load_uint(32),    ;; total_participants
+        ds~load_dict()       ;; participants_dict
+    );
+}
+
+() save_data(slice operator_address, int total_participants, cell participants_dict) impure inline {
+    set_data(
+        begin_cell()
+            .store_slice(operator_address)
+            .store_uint(total_participants, 32)
+            .store_dict(participants_dict)
+            .end_cell()
+    );
+}
+
+;; Helper to create participant data cell
+cell pack_participant_data(int stake, int running_time, int gpu_score, int uptime, int outages, int last_update, int reg_time) inline {
+    return begin_cell()
+        .store_coins(stake)
+        .store_uint(running_time, 64)
+        .store_uint(gpu_score, 32)
+        .store_uint(uptime, 32)
+        .store_uint(outages, 16)
+        .store_uint(last_update, 32)
+        .store_uint(reg_time, 32)
+        .end_cell();
+}
+
+;; Helper to parse participant data
+(int, int, int, int, int, int, int) unpack_participant_data(slice data) inline {
+    return (
+        data~load_coins(),    ;; stake
+        data~load_uint(64),   ;; running_time
+        data~load_uint(32),   ;; gpu_score
+        data~load_uint(32),   ;; uptime
+        data~load_uint(16),   ;; outages
+        data~load_uint(32),   ;; last_update
+        data~load_uint(32)    ;; reg_time
+    );
+}
+
+;; Helper functions
+() require_operator(slice sender, slice operator) impure inline {
+    throw_unless(ERROR_UNAUTHORIZED, equal_slices(sender, operator));
+}
+
+() require_valid_uptime(int uptime) impure inline {
+    throw_unless(ERROR_INVALID_UPTIME, (uptime >= 0) & (uptime <= UPTIME_PRECISION));
+}
+
+;; Calculate contribution score
+int calculate_contribution(int running_time, int gpu_score, int uptime) inline {
+    ;; Contribution = running_time * gpu_score * (uptime / UPTIME_PRECISION)
+    ;; Using integer arithmetic to avoid overflow
+    int uptime_factor = (uptime * 1000000) / UPTIME_PRECISION; ;; Scale to millionths
+    int base_contribution = (running_time * gpu_score) / 1000; ;; Scale down GPU score
+    return (base_contribution * uptime_factor) / 1000000; ;; Apply uptime factor
+}
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+    if (in_msg_body.slice_empty?()) {
+        return (); ;; ignore empty messages
+    }
+
+    slice cs = in_msg_full.begin_parse();
+    int flags = cs~load_uint(4);
+    slice sender_address = cs~load_msg_addr();
+
+    int op = in_msg_body~load_uint(32);
+
+    if (op == OP_INITIALIZE) {
+        ;; Check if already initialized
+        slice ds = get_data().begin_parse();
+        if (~ ds.slice_empty?()) {
+            throw(ERROR_UNAUTHORIZED);
+        }
+
+        cell empty_dict = new_dict();
+        save_data(sender_address, 0, empty_dict);
+        return ();
+    }
+
+    ;; Load data for all other operations
+    (slice operator_address, int total_participants, cell participants_dict) = load_data();
+
+    if (op == OP_REGISTER_PARTICIPANT) {
+        ;; Only operator or self-registration with stake
+        int is_operator = equal_slices(sender_address, operator_address);
+
+        ;; Check minimum stake
+        throw_unless(ERROR_INSUFFICIENT_STAKE, msg_value >= MIN_PARTICIPANT_STAKE);
+
+        ;; Get participant address (operator can register others, or self-register)
+        slice participant_addr = sender_address;
+        if (is_operator) {
+            if (~ in_msg_body.slice_empty?()) {
+                participant_addr = in_msg_body~load_msg_addr();
+            }
+        }
+
+        int addr_hash = slice_hash(participant_addr);
+
+        ;; Check if participant already exists
+        (slice existing_data, int found) = participants_dict.udict_get?(256, addr_hash);
+        throw_if(ERROR_PARTICIPANT_EXISTS, found);
+
+        ;; Create participant entry
+        int current_time = now();
+        cell participant_data = pack_participant_data(
+            msg_value,      ;; stake
+            0,              ;; running_time
+            0,              ;; gpu_score
+            UPTIME_PRECISION, ;; uptime (start at 100%)
+            0,              ;; outages
+            current_time,   ;; last_update
+            current_time    ;; reg_time
+        );
+
+        participants_dict~udict_set(256, addr_hash, participant_data.begin_parse());
+        total_participants += 1;
+
+        save_data(operator_address, total_participants, participants_dict);
+        return ();
+    }
+
+    if (op == OP_UNREGISTER_PARTICIPANT) {
+        slice participant_addr = in_msg_body~load_msg_addr();
+        int addr_hash = slice_hash(participant_addr);
+
+        ;; Only operator or participant themselves can unregister
+        int is_operator = equal_slices(sender_address, operator_address);
+        int is_participant = equal_slices(sender_address, participant_addr);
+        throw_unless(ERROR_UNAUTHORIZED, is_operator | is_participant);
+
+        ;; Get participant data
+        (slice participant_slice, int found) = participants_dict.udict_get?(256, addr_hash);
+        throw_unless(ERROR_PARTICIPANT_NOT_FOUND, found);
+
+        (int stake, int running_time, int gpu_score, int uptime, int outages, int last_update, int reg_time) = unpack_participant_data(participant_slice);
+
+        ;; Remove from dictionary
+        participants_dict~udict_delete?(256, addr_hash);
+        total_participants -= 1;
+
+        save_data(operator_address, total_participants, participants_dict);
+
+        ;; Return stake to participant
+        if (stake > 0) {
+            var msg = begin_cell()
+                .store_uint(0x18, 6)
+                .store_slice(participant_addr)
+                .store_coins(stake)
+                .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+                .end_cell();
+            send_raw_message(msg, 1);
+        }
+        return ();
+    }
+
+    if (op == OP_UPDATE_METRICS) {
+        require_operator(sender_address, operator_address);
+
+        slice participant_addr = in_msg_body~load_msg_addr();
+        int new_running_time = in_msg_body~load_uint(64);
+        int new_gpu_score = in_msg_body~load_uint(32);
+        int new_uptime = in_msg_body~load_uint(32);
+        int new_outages = in_msg_body~load_uint(16);
+
+        require_valid_uptime(new_uptime);
+
+        int addr_hash = slice_hash(participant_addr);
+
+        ;; Get existing participant data
+        (slice participant_slice, int found) = participants_dict.udict_get?(256, addr_hash);
+        throw_unless(ERROR_PARTICIPANT_NOT_FOUND, found);
+
+        (int stake, int old_running_time, int old_gpu_score, int old_uptime, int old_outages, int last_update, int reg_time) = unpack_participant_data(participant_slice);
+
+        ;; Update metrics
+        int current_time = now();
+        cell updated_data = pack_participant_data(
+            stake,
+            new_running_time,
+            new_gpu_score,
+            new_uptime,
+            new_outages,
+            current_time,
+            reg_time
+        );
+
+        participants_dict~udict_set(256, addr_hash, updated_data.begin_parse());
+        save_data(operator_address, total_participants, participants_dict);
+        return ();
+    }
+
+    if (op == OP_ADD_PARTICIPANT_STAKE) {
+        slice participant_addr = sender_address;
+        int addr_hash = slice_hash(participant_addr);
+
+        ;; Get existing participant data
+        (slice participant_slice, int found) = participants_dict.udict_get?(256, addr_hash);
+        throw_unless(ERROR_PARTICIPANT_NOT_FOUND, found);
+
+        (int stake, int running_time, int gpu_score, int uptime, int outages, int last_update, int reg_time) = unpack_participant_data(participant_slice);
+
+        ;; Add to stake
+        stake += msg_value;
+
+        cell updated_data = pack_participant_data(
+            stake, running_time, gpu_score, uptime, outages, last_update, reg_time
+        );
+
+        participants_dict~udict_set(256, addr_hash, updated_data.begin_parse());
+        save_data(operator_address, total_participants, participants_dict);
+        return ();
+    }
+
+    if (op == OP_WITHDRAW_PARTICIPANT_STAKE) {
+        slice participant_addr = sender_address;
+        int addr_hash = slice_hash(participant_addr);
+
+        ;; Get existing participant data
+        (slice participant_slice, int found) = participants_dict.udict_get?(256, addr_hash);
+        throw_unless(ERROR_PARTICIPANT_NOT_FOUND, found);
+
+        (int stake, int running_time, int gpu_score, int uptime, int outages, int last_update, int reg_time) = unpack_participant_data(participant_slice);
+
+        int withdraw_amount = in_msg_body~load_coins();
+        throw_unless(ERROR_INSUFFICIENT_STAKE, withdraw_amount <= stake);
+
+        ;; Ensure minimum stake remains
+        int remaining = stake - withdraw_amount;
+        throw_unless(ERROR_INSUFFICIENT_STAKE, remaining >= MIN_PARTICIPANT_STAKE);
+
+        stake = remaining;
+
+        cell updated_data = pack_participant_data(
+            stake, running_time, gpu_score, uptime, outages, last_update, reg_time
+        );
+
+        participants_dict~udict_set(256, addr_hash, updated_data.begin_parse());
+        save_data(operator_address, total_participants, participants_dict);
+
+        ;; Send withdrawal
+        var msg = begin_cell()
+            .store_uint(0x18, 6)
+            .store_slice(participant_addr)
+            .store_coins(withdraw_amount)
+            .store_uint(0, 1 + 4 + 4 + 64 + 32 + 1 + 1)
+            .end_cell();
+        send_raw_message(msg, 1);
+        return ();
+    }
+
+    throw(0xffff); ;; unknown operation
+}
+
+;; Get methods
+int get_total_participants() method_id {
+    (slice operator_address, int total_participants, cell participants_dict) = load_data();
+    return total_participants;
+}
+
+(int, int, int, int, int, int, int) get_participant_data(slice participant_addr) method_id {
+    (slice operator_address, int total_participants, cell participants_dict) = load_data();
+
+    int addr_hash = slice_hash(participant_addr);
+    (slice participant_slice, int found) = participants_dict.udict_get?(256, addr_hash);
+
+    if (~ found) {
+        return (0, 0, 0, 0, 0, 0, 0);
+    }
+
+    return unpack_participant_data(participant_slice);
+}
+
+int get_participant_contribution(slice participant_addr) method_id {
+    (slice operator_address, int total_participants, cell participants_dict) = load_data();
+
+    int addr_hash = slice_hash(participant_addr);
+    (slice participant_slice, int found) = participants_dict.udict_get?(256, addr_hash);
+
+    if (~ found) {
+        return 0;
+    }
+
+    (int stake, int running_time, int gpu_score, int uptime, int outages, int last_update, int reg_time) = unpack_participant_data(participant_slice);
+
+    return calculate_contribution(running_time, gpu_score, uptime);
+}
+
+int get_total_contribution() method_id {
+    (slice operator_address, int total_participants, cell participants_dict) = load_data();
+
+    int total_contribution = 0;
+    int addr_hash = -1;
+
+    do {
+        (addr_hash, slice participant_slice, int found) = participants_dict.udict_get_next?(256, addr_hash);
+        if (found) {
+            (int stake, int running_time, int gpu_score, int uptime, int outages, int last_update, int reg_time) = unpack_participant_data(participant_slice);
+            total_contribution += calculate_contribution(running_time, gpu_score, uptime);
+        }
+    } until (~ found);
+
+    return total_contribution;
+}
+
+slice get_operator_address() method_id {
+    (slice operator_address, int total_participants, cell participants_dict) = load_data();
+    return operator_address;
+}
