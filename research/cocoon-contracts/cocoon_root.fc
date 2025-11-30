@@ -1,0 +1,309 @@
+#include "imports/stdlib.fc";
+#include "utils.fc";
+#include "opcodes.fc";
+
+(slice, cell, cell, int, cell, cell, int, cell) load_data() inline {
+  return unpack_cocoon_root_data(get_data().begin_parse());
+}
+
+() save_data(slice owner_address, cell proxy_hashes, cell registered_proxies, int last_proxy_seqno, cell worker_hashes,
+             cell model_hashes, int version, cell params) impure inline {
+  set_data(pack_cocoon_root_data(owner_address, proxy_hashes, registered_proxies, last_proxy_seqno, worker_hashes, model_hashes, version, params));
+}
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+  if (in_msg_body.slice_empty?()) { ;; ignore empty messages
+      return ();
+  }
+
+  int to_leave_on_balance = max(my_balance - msg_value + my_storage_due(), STORAGE_ESTIMATE);
+  raw_reserve(to_leave_on_balance, 0);
+
+  slice cs = in_msg_full.begin_parse();
+  int flags = cs~load_uint(4);
+
+  if (flags & 1) { ;; ignore all bounced messages
+      return ();
+  }
+  slice sender_address = cs~load_msg_addr();
+
+  int op = in_msg_body~load_uint(32);
+  if (op == op::do_not_process) {
+    return ();
+  }
+  int query_id = in_msg_body~load_uint(64);
+
+  (slice owner_address, cell proxy_hashes, cell registered_proxies, int last_proxy_seqno, cell worker_hashes,
+   cell model_hashes, int version, cell params) = load_data();
+
+  throw_unless(error::expected_message_from_owner, equal_slices_bits(sender_address, owner_address));
+
+  if (op == op::root_add_worker_type) {
+
+    int worker_hash = in_msg_body~load_uint(256);
+    in_msg_body.end_parse();
+
+    worker_hashes~udict_set(256, worker_hash, "");
+    version += 1;
+
+  } elseif (op == op::root_del_worker_type) {
+
+    int worker_hash = in_msg_body~load_uint(256);
+    in_msg_body.end_parse();
+
+    worker_hashes~udict_delete?(256, worker_hash);
+    version += 1;
+
+  } elseif (op == op::root_add_model_type) {
+
+    int model_hash = in_msg_body~load_uint(256);
+    in_msg_body.end_parse();
+
+    model_hashes~udict_set(256, model_hash, "");
+    version += 1;
+
+  } elseif (op == op::root_del_model_type) {
+
+    int model_hash = in_msg_body~load_uint(256);
+    in_msg_body.end_parse();
+
+    model_hashes~udict_delete?(256, model_hash);
+    version += 1;
+
+  } elseif (op == op::root_add_proxy_type) {
+
+    int proxy_hash = in_msg_body~load_uint(256);
+    in_msg_body.end_parse();
+
+    proxy_hashes~udict_set(256, proxy_hash, "");
+    version += 1;
+
+  } elseif (op == op::root_del_proxy_type) {
+
+    int proxy_hash = in_msg_body~load_uint(256);
+    in_msg_body.end_parse();
+
+    proxy_hashes~udict_delete?(256, proxy_hash);
+    version += 1;
+
+  } elseif (op == op::root_register_proxy) {
+
+    slice proxy_desc = in_msg_body;
+
+    ;; checking validity
+    throw_unless(error::msg_format_mismatch, in_msg_body~load_uint(1) == 0);
+    int addr_len = in_msg_body~load_uint(7);
+    in_msg_body~skip_bits(addr_len * 8); ;; addr
+    in_msg_body.end_parse();
+
+    last_proxy_seqno += 1;
+    registered_proxies~udict_set(32, last_proxy_seqno, proxy_desc);
+    version += 1;
+
+  } elseif (op == op::root_unregister_proxy) {
+
+    int seqno = in_msg_body~load_uint(32);
+    in_msg_body.end_parse();
+
+    registered_proxies~udict_delete?(32, seqno);
+    version += 1;
+
+  } elseif (op == op::root_update_proxy) {
+
+    int seqno = in_msg_body~load_uint(32);
+
+    slice proxy_addr = in_msg_body;
+
+    ;; checking validity
+    throw_unless(error::msg_format_mismatch, in_msg_body~load_uint(1) == 0);
+    int addr_len = in_msg_body~load_uint(7);
+    in_msg_body~skip_bits(addr_len * 8); ;; addr
+    in_msg_body.end_parse();
+
+    (slice value, int is_found) = registered_proxies.udict_get?(32, seqno);
+    throw_if(error::unknown_proxy_type, is_found == 0); ;; canno change deleted proxy 
+
+    slice new_value = begin_cell().store_slice(proxy_addr).end_cell().begin_parse();
+    registered_proxies~udict_set(32, seqno, new_value);
+    version += 1;
+
+  } elseif (op == op::root_change_price) {
+
+    (int params_version, int unique_id, int is_test, int price_per_token,
+     int worker_fee_per_token, int prompt_tokens_price_multiplier, int cached_tokens_price_multiplier, 
+     int completion_tokens_price_multiplier, int reasoning_tokens_price_multiplier,
+     int proxy_delay_before_close, int client_delay_before_close,
+     int min_proxy_stake, int min_client_stake, cell proxy_sc_code, cell worker_sc_code, cell client_sc_code) = unpack_cocoon_params(params);
+
+    price_per_token = in_msg_body~load_coins();
+    worker_fee_per_token = in_msg_body~load_coins();
+    in_msg_body.end_parse();
+
+    version += 1;
+    params_version += 1;
+
+    params = pack_cocoon_params(params_version, unique_id, is_test, price_per_token, worker_fee_per_token, 
+                               prompt_tokens_price_multiplier, cached_tokens_price_multiplier, 
+                               completion_tokens_price_multiplier, reasoning_tokens_price_multiplier,
+                               proxy_delay_before_close, client_delay_before_close,
+                               min_proxy_stake, min_client_stake, proxy_sc_code, worker_sc_code, client_sc_code);
+
+  } elseif (op == op::root_change_params) {
+
+    (int params_version, int unique_id, int is_test, int price_per_token,
+     int worker_fee_per_token, int prompt_tokens_price_multiplier, int cached_tokens_price_multiplier, 
+     int completion_tokens_price_multiplier, int reasoning_tokens_price_multiplier,
+     int proxy_delay_before_close, int client_delay_before_close,
+     int min_proxy_stake, int min_client_stake, cell proxy_sc_code, cell worker_sc_code, cell client_sc_code) = unpack_cocoon_params(params);
+
+    price_per_token = in_msg_body~load_coins();
+    worker_fee_per_token = in_msg_body~load_coins();
+    proxy_delay_before_close = in_msg_body~load_uint(32);
+    client_delay_before_close = in_msg_body~load_uint(32);
+    min_proxy_stake = in_msg_body~load_coins();
+    min_client_stake = in_msg_body~load_coins();
+    in_msg_body.end_parse();
+
+    version += 1;
+    params_version += 1;
+
+    params = pack_cocoon_params(params_version, unique_id, is_test, price_per_token, worker_fee_per_token, 
+                               prompt_tokens_price_multiplier, cached_tokens_price_multiplier, 
+                               completion_tokens_price_multiplier, reasoning_tokens_price_multiplier,
+                               proxy_delay_before_close, client_delay_before_close,
+                               min_proxy_stake, min_client_stake, proxy_sc_code, worker_sc_code, client_sc_code);
+
+  } elseif (op == op::root_upgrade_contracts) {
+
+    (int params_version, int unique_id, int is_test, int price_per_token,
+     int worker_fee_per_token, int prompt_tokens_price_multiplier, int cached_tokens_price_multiplier, 
+     int completion_tokens_price_multiplier, int reasoning_tokens_price_multiplier,
+     int proxy_delay_before_close, int client_delay_before_close,
+     int min_proxy_stake, int min_client_stake, cell proxy_sc_code, cell worker_sc_code, cell client_sc_code) = unpack_cocoon_params(params);
+
+    proxy_sc_code = in_msg_body~load_ref();
+    worker_sc_code = in_msg_body~load_ref();
+    client_sc_code = in_msg_body~load_ref();
+    in_msg_body.end_parse();
+
+    version += 1;
+    params_version += 1;
+
+    params = pack_cocoon_params(params_version, unique_id, is_test, price_per_token, worker_fee_per_token, 
+                               prompt_tokens_price_multiplier, cached_tokens_price_multiplier, 
+                               completion_tokens_price_multiplier, reasoning_tokens_price_multiplier,
+                               proxy_delay_before_close, client_delay_before_close,
+                               min_proxy_stake, min_client_stake, proxy_sc_code, worker_sc_code, client_sc_code);
+
+  } elseif (op == op::root_upgrade) {
+
+    cell new_code = in_msg_body~load_ref();
+    in_msg_body.end_parse();
+
+    set_code(new_code);
+
+  } elseif (op == op::root_reset) {
+
+    in_msg_body.end_parse();
+
+    proxy_hashes = null();
+    worker_hashes = null();
+    model_hashes = null();
+    registered_proxies = null();
+
+    version += 1;
+
+  } elseif (op == op::root_upgrade_full) {
+
+    (cell new_data, cell new_code) = (in_msg_body~load_ref(), in_msg_body~load_ref());
+    in_msg_body.end_parse();
+
+    set_data(new_data);
+    set_code(new_code);
+
+    forward_excesses(sender_address, query_id);
+
+    return ();
+
+  } elseif (op == op::root_change_owner) {
+
+    owner_address = in_msg_body~load_msg_addr();
+    in_msg_body.end_parse();
+    
+    version += 1;
+
+  } else {
+    throw (error::unknown_op);
+  }
+
+  forward_excesses(sender_address, query_id);
+
+  save_data(owner_address, proxy_hashes, registered_proxies, last_proxy_seqno, worker_hashes,
+                               model_hashes, version, params);
+
+  return ();
+}
+
+(int, int, int, int, int, int, int, int, int, slice) get_cocoon_data() method_id {
+  (slice owner_address, cell proxy_hashes, cell registered_proxies, int last_proxy_seqno, cell worker_hashes,
+    cell model_hashes, int version, cell params) = load_data();
+  (int params_version, int unique_id, int is_test, int price_per_token,
+   int worker_fee_per_token, int prompt_tokens_price_multiplier, int cached_tokens_price_multiplier, 
+   int completion_tokens_price_multiplier, int reasoning_tokens_price_multiplier,
+   int proxy_delay_before_close, int client_delay_before_close,
+   int min_proxy_stake, int min_client_stake, cell proxy_sc_code, cell worker_sc_code, cell client_sc_code) = unpack_cocoon_params(params);
+  return (version, last_proxy_seqno, params_version, unique_id, is_test, price_per_token, worker_fee_per_token, 
+          min_proxy_stake, min_client_stake, owner_address);
+}
+
+int proxy_hash_is_valid(int hash) method_id {
+  (slice owner_address, cell proxy_hashes, cell registered_proxies, int last_proxy_seqno, cell worker_hashes,
+    cell model_hashes, int version, cell params) = load_data();
+  (slice value, int is_found) = proxy_hashes.udict_get?(256, hash);
+  return is_found;
+}
+
+int worker_hash_is_valid(int hash) method_id {
+  (slice owner_address, cell proxy_hashes, cell registered_proxies, int last_proxy_seqno, cell worker_hashes,
+    cell model_hashes, int version, cell params) = load_data();
+  (slice value, int is_found) = worker_hashes.udict_get?(256, hash);
+  return is_found;
+}
+
+int model_hash_is_valid(int hash) method_id {
+  (slice owner_address, cell proxy_hashes, cell registered_proxies, int last_proxy_seqno, cell worker_hashes,
+    cell model_hashes, int version, cell params) = load_data();
+  (slice value, int is_found) = model_hashes.udict_get?(256, hash);
+  return is_found;
+}
+
+int last_proxy_seqno() method_id {
+  (slice owner_address, cell proxy_hashes, cell registered_proxies, int last_proxy_seqno, cell worker_hashes,
+    cell model_hashes, int version, cell params) = load_data();
+  return last_proxy_seqno;
+}
+
+(int, int, int, int, int, int, int, int, int, int, int, int, int, int) get_cur_params() method_id {
+  (slice owner_address, cell proxy_hashes, cell registered_proxies, int last_proxy_seqno, cell worker_hashes,
+    cell model_hashes, int version, cell params) = load_data();
+  (int params_version, int unique_id, int is_test, int price_per_token,
+   int worker_fee_per_token, int prompt_tokens_price_multiplier, int cached_tokens_price_multiplier, 
+   int completion_tokens_price_multiplier, int reasoning_tokens_price_multiplier,
+   int proxy_delay_before_close, int client_delay_before_close,
+   int min_proxy_stake, int min_client_stake, cell proxy_sc_code, cell worker_sc_code, cell client_sc_code) = unpack_cocoon_params(params);
+
+  int proxy_sc_hash = 0;
+  int worker_sc_hash = 0;
+  int client_sc_hash = 0;
+  if (~ null?(proxy_sc_code)) {
+    proxy_sc_hash = slice_hash(proxy_sc_code.begin_parse());
+  }
+  if (~ null?(worker_sc_code)) {
+    worker_sc_hash = slice_hash(worker_sc_code.begin_parse());
+  }
+  if (~ null?(client_sc_code)) {
+    client_sc_hash = slice_hash(client_sc_code.begin_parse());
+  }
+  return (params_version, unique_id, is_test, price_per_token, worker_fee_per_token, cached_tokens_price_multiplier, reasoning_tokens_price_multiplier, 
+     proxy_delay_before_close, client_delay_before_close, min_proxy_stake, min_client_stake, proxy_sc_hash, worker_sc_hash, client_sc_hash);
+}
