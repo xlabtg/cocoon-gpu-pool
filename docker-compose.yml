@@ -69,21 +69,30 @@ services:
     environment:
       - VITE_API_URL=http://localhost:8000
 
-  # Telegram Bot
+  # Telegram Bot (TypeScript)
   telegram-bot:
     build:
       context: ./telegram-bot
       dockerfile: Dockerfile
     container_name: cocoon-pool-telegram-bot
     environment:
-      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
-      DATABASE_URL: postgresql://cocoon:cocoon@postgres:5432/cocoon_pool
-      API_URL: http://backend:8000
+      BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      BACKEND_API_URL: http://backend:8000
+      BACKEND_API_KEY: ${BACKEND_API_KEY:-dev-api-key}
+      DB_TYPE: sqlite
+      DB_PATH: /app/data/bot.db
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      NODE_ENV: production
+      LOG_LEVEL: info
     depends_on:
-      postgres:
+      redis:
         condition: service_healthy
       backend:
         condition: service_started
+    volumes:
+      - telegram-bot-data:/app/data
+      - telegram-bot-logs:/app/logs
     restart: unless-stopped
 
   # Prometheus Monitoring
@@ -120,3 +129,5 @@ volumes:
   postgres_data:
   prometheus_data:
   grafana_data:
+  telegram-bot-data:
+  telegram-bot-logs:

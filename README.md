@@ -59,8 +59,8 @@ See [docs/SETUP.md](docs/SETUP.md) for detailed installation instructions.
 └──────────┘     │  Grafana   │    └───────────┘
                  └────────────┘
 ┌────────────────────────────────────────────────────────────┐
-│              Telegram Bot (Python)                          │
-│  /start | /stats | /payouts | /workers | /alerts           │
+│           Telegram Bot (TypeScript/Node.js)                 │
+│  /start | /status | /withdrawals | /settings | /help       │
 └────────────────────────────────────────────────────────────┘
 ```
 
@@ -82,12 +82,13 @@ See [docs/SETUP.md](docs/SETUP.md) for detailed installation instructions.
 - **TON Wallet Auth**: Secure authentication via TON Connect
 - **Mobile Responsive**: Optimized for all device sizes
 
-### Telegram Bot
-- **Account Management**: Register and manage participant accounts
-- **Statistics**: View worker performance and earnings
-- **Notifications**: Receive alerts for payments and issues
-- **Worker Control**: Start, stop, and monitor workers
-- **Support**: Get help and support via chatbot
+### Telegram Bot (TypeScript)
+- **Account Management**: Register and link TON wallet addresses
+- **Statistics**: View real-time worker performance and earnings
+- **Payment History**: Track all payouts with detailed transaction info
+- **Notifications**: Configurable alerts for payments, equipment issues, and reports
+- **Multilingual**: Full support for Russian and English languages
+- **Scheduled Reports**: Daily and weekly performance summaries
 
 ### Monitoring & Alerting
 - **Prometheus Metrics**: Complete observability stack
