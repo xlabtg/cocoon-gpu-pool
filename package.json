@@ -1,0 +1,41 @@
+{
+  "name": "cocoon-gpu-pool-contracts",
+  "version": "1.0.0",
+  "description": "TON smart contracts for Cocoon GPU Pool reward distribution system",
+  "main": "index.js",
+  "scripts": {
+    "test": "jest",
+    "test:coverage": "jest --coverage",
+    "compile": "node scripts/compile.js",
+    "deploy:testnet": "node scripts/deploy-testnet.js",
+    "deploy:mainnet": "node scripts/deploy-mainnet.js"
+  },
+  "keywords": [
+    "TON",
+    "smart-contract",
+    "FunC",
+    "blockchain",
+    "GPU",
+    "pool"
+  ],
+  "author": "Cocoon GPU Pool",
+  "license": "MIT",
+  "devDependencies": {
+    "@ton-community/func-js": "^0.6.2",
+    "@ton-community/sandbox": "^0.13.0",
+    "@ton-community/test-utils": "^0.4.0",
+    "@ton/core": "^0.53.0",
+    "@ton/crypto": "^3.2.0",
+    "@ton/ton": "^13.9.0",
+    "@types/jest": "^29.5.5",
+    "@types/node": "^20.8.0",
+    "jest": "^29.7.0",
+    "ts-jest": "^29.1.1",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.2.2"
+  },
+  "dependencies": {
+    "@ton/core": "^0.53.0",
+    "@ton/crypto": "^3.2.0"
+  }
+}
