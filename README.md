@@ -1,286 +1,186 @@
-# Cocoon GPU Pool Telegram Bot
+# Cocoon GPU Pool - Monitoring & Management System
+
+[![License](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.11+-blue.svg)](https://www.python.org/)
+[![React](https://img.shields.io/badge/react-18.2+-blue.svg)](https://reactjs.org/)
 
 Cocoon GPU Pool allows GPU owners to pool computing resources to participate in the Cocoon network, receiving passive income in TON for processing confidential calculations using TEE/SGX technologies.
 
-This repository contains the official Telegram Bot for managing participant accounts, receiving payment notifications, and viewing statistics.
+This repository contains a comprehensive monitoring and management system for pool participants, featuring:
+
+- 📊 **Real-time Performance Monitoring** - Track GPU utilization, inference requests, and profitability
+- 💰 **Payment History & Tax Reports** - Complete payout tracking with export functionality
+- 🔔 **Intelligent Alerting** - Get notified about worker issues, payments, and performance
+- 🎯 **Pool Operator Dashboard** - Manage all participants and workers from a central interface
+- 👤 **Participant Accounts** - Personal dashboards with detailed statistics
+- 🤖 **Telegram Bot** - Manage workers and receive alerts via Telegram
+- 📈 **Grafana Integration** - Advanced visualization with Prometheus metrics
+- 🔐 **TON Wallet Authentication** - Secure access using TON blockchain wallets
+
+## Quick Start
+
+### Using Docker (Recommended)
+
+```bash
+# Clone the repository
+git clone https://github.com/xlabtg/cocoon-gpu-pool.git
+cd cocoon-gpu-pool
+
+# Configure environment
+cp .env.example .env
+# Edit .env with your settings
+
+# Start all services
+docker-compose up -d
+
+# Access the dashboard
+open http://localhost:3000
+```
+
+### Manual Setup
+
+See [docs/SETUP.md](docs/SETUP.md) for detailed installation instructions.
+
+## System Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        Frontend (React)                      │
+│  Dashboard | Workers | Payouts | Account | TON Connect      │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+┌──────────────────────┴──────────────────────────────────────┐
+│                    Backend API (FastAPI)                     │
+│  Workers | Participants | Payouts | Metrics | Alerts        │
+└───┬────────────────┬─────────────────┬──────────────────────┘
+    │                │                 │
+┌───┴────┐     ┌─────┴──────┐    ┌────┴──────┐
+│PostgreSQL│     │Prometheus  │    │  Redis    │
+└──────────┘     │  Grafana   │    └───────────┘
+                 └────────────┘
+┌────────────────────────────────────────────────────────────┐
+│           Telegram Bot (TypeScript/Node.js)                 │
+│  /start | /status | /withdrawals | /settings | /help       │
+└────────────────────────────────────────────────────────────┘
+```
 
 ## Features
 
-### Commands
+### Backend API
+- **Worker Monitoring**: Automatic scraping of worker endpoints (`/stats`, `/jsonstats`, `/perf`)
+- **Metrics Collection**: Time-series data storage with PostgreSQL
+- **Alert System**: Configurable alerts for critical conditions
+- **Payout Tracking**: Integration with TON blockchain for payment verification
+- **REST API**: Comprehensive API with OpenAPI documentation
+- **Prometheus Exporter**: Native metrics export for Prometheus
 
-- `/start` - Register and link TON wallet
-- `/status` - View current mining statistics
-- `/withdrawals` - View payment history
-- `/settings` - Configure notification preferences
-- `/help` - Show help and documentation
+### Frontend Dashboard
+- **Pool Overview**: Real-time statistics and performance charts
+- **Worker Management**: Add, configure, and monitor GPU workers
+- **Payout History**: Complete transaction history with tax export
+- **Personal Account**: User profile and notification settings
+- **TON Wallet Auth**: Secure authentication via TON Connect
+- **Mobile Responsive**: Optimized for all device sizes
 
-### Notifications
+### Telegram Bot (TypeScript)
+- **Account Management**: Register and link TON wallet addresses
+- **Statistics**: View real-time worker performance and earnings
+- **Payment History**: Track all payouts with detailed transaction info
+- **Notifications**: Configurable alerts for payments, equipment issues, and reports
+- **Multilingual**: Full support for Russian and English languages
+- **Scheduled Reports**: Daily and weekly performance summaries
 
-- **Payment Notifications** - Instant alerts when you receive payments
-- **Equipment Warnings** - Alerts when your mining equipment goes offline or encounters errors
-- **Daily Reports** - Daily summary of your mining performance
-- **Weekly Reports** - Comprehensive weekly statistics and earnings
+### Monitoring & Alerting
+- **Prometheus Metrics**: Complete observability stack
+- **Grafana Dashboards**: Pre-configured visualization dashboards
+- **Alert Rules**: Worker down, high temperature, performance degradation
+- **Multi-channel Notifications**: Email and Telegram alerts
 
-### Multilingual Support
+## API Endpoints
 
-The bot supports both Russian and English languages, automatically detecting your Telegram language preference.
+See [docs/API.md](docs/API.md) for complete API documentation.
 
-## Architecture
-
-### Scalability Features
-
-- **Caching Layer**: Redis-based caching to reduce database load and API calls
-- **Database**: SQLite for development, easily upgradable to PostgreSQL for production
-- **Error Handling**: Comprehensive error handling with automatic recovery
-- **Logging**: Structured logging with Winston for monitoring and debugging
-- **Webhooks**: Support for both webhook and long polling modes
-
-### Technology Stack
-
-- **TypeScript** - Type-safe development
-- **Telegraf** - Modern Telegram Bot framework
-- **TypeORM** - Database ORM with entity management
-- **Redis** - High-performance caching
-- **Express** - Webhook server
-- **Node-cron** - Scheduled reports
-- **Winston** - Professional logging
-
-## Installation
-
-### Prerequisites
-
-- Node.js 18 or higher
-- npm or yarn
-- Redis (optional, for caching)
-
-### Local Development
-
-1. Clone the repository:
-```bash
-git clone https://github.com/xlabtg/cocoon-gpu-pool.git
-cd cocoon-gpu-pool
-```
-
-2. Install dependencies:
-```bash
-npm install
-```
-
-3. Create `.env` file from example:
-```bash
-cp .env.example .env
-```
-
-4. Configure your `.env` file:
-```env
-BOT_TOKEN=your_bot_token_from_botfather
-BACKEND_API_URL=http://localhost:8080/api
-BACKEND_API_KEY=your_api_key
-```
-
-5. Run in development mode:
-```bash
-npm run dev
-```
-
-### Docker Deployment
-
-1. Build and run with Docker Compose:
-```bash
-docker-compose up -d
-```
-
-2. View logs:
-```bash
-docker-compose logs -f bot
-```
-
-3. Stop the bot:
-```bash
-docker-compose down
-```
-
-### Production Deployment
-
-For production deployment with webhook mode:
-
-1. Set up your environment variables:
-```env
-BOT_TOKEN=your_production_bot_token
-WEBHOOK_DOMAIN=https://your-domain.com
-WEBHOOK_PORT=3000
-BACKEND_API_URL=https://api.cocoon.org
-NODE_ENV=production
-```
-
-2. Deploy with Docker:
-```bash
-docker-compose up -d
-```
+Key endpoints:
+- `GET /api/v1/workers` - List all workers
+- `GET /api/v1/workers/{id}/metrics` - Get worker metrics
+- `GET /api/v1/payouts` - List payouts
+- `GET /api/v1/payouts/export/tax-report` - Export tax report
+- `GET /metrics` - Prometheus metrics
 
 ## Configuration
 
 ### Environment Variables
 
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `BOT_TOKEN` | Telegram Bot token from BotFather | Required |
-| `WEBHOOK_DOMAIN` | Domain for webhook mode (optional) | - |
-| `WEBHOOK_PORT` | Port for webhook server | 3000 |
-| `DB_TYPE` | Database type (sqlite/postgres) | sqlite |
-| `DB_PATH` | SQLite database file path | ./data/bot.db |
-| `REDIS_HOST` | Redis host for caching | localhost |
-| `REDIS_PORT` | Redis port | 6379 |
-| `BACKEND_API_URL` | Backend API endpoint | Required |
-| `BACKEND_API_KEY` | Backend API authentication key | Required |
-| `ENABLE_DAILY_REPORTS` | Enable daily reports | true |
-| `ENABLE_WEEKLY_REPORTS` | Enable weekly reports | true |
-| `LOG_LEVEL` | Logging level (info/debug/error) | info |
-| `NODE_ENV` | Environment (development/production) | development |
+```env
+# Backend
+DATABASE_URL=postgresql://user:pass@localhost:5432/cocoon_pool
+REDIS_URL=redis://localhost:6379/0
+SECRET_KEY=your-secret-key
 
-## Testing
+# TON Blockchain
+TON_API_KEY=your-ton-api-key
 
-Run the test suite:
-```bash
-npm test
+# Telegram Bot
+TELEGRAM_BOT_TOKEN=your-bot-token
+
+# Monitoring
+WORKER_SCRAPE_INTERVAL=15  # seconds
+ALERT_CHECK_INTERVAL=60     # seconds
 ```
 
-Run tests with coverage:
-```bash
-npm run test:coverage
-```
+### Worker Setup
 
-Run tests in watch mode:
-```bash
-npm run test:watch
-```
+Workers should expose these endpoints:
+- `http://localhost:12000/stats` - Human-readable stats
+- `http://localhost:12000/jsonstats` - JSON metrics
+- `http://localhost:12000/perf` - Performance data
+
+Multiple workers use incremental ports: 12000, 12010, 12020, etc.
 
 ## Development
 
-### Project Structure
+### Running Tests
 
-```
-src/
-├── commands/          # Bot command handlers
-│   ├── start.ts
-│   ├── status.ts
-│   ├── withdrawals.ts
-│   ├── settings.ts
-│   └── help.ts
-├── config/           # Configuration management
-├── database/         # Database entities and setup
-│   └── entities/
-├── handlers/         # Webhook and event handlers
-├── locales/          # Internationalization
-│   ├── en.ts
-│   └── ru.ts
-├── services/         # Business logic services
-│   ├── BackendService.ts
-│   ├── CacheService.ts
-│   ├── NotificationService.ts
-│   ├── SchedulerService.ts
-│   └── UserService.ts
-├── types/            # TypeScript type definitions
-├── utils/            # Utility functions
-└── index.ts          # Application entry point
-```
-
-### Code Quality
-
-Lint your code:
 ```bash
-npm run lint
+# Backend tests
+cd backend
+pytest
+
+# Frontend tests
+cd frontend
+npm test
 ```
 
-Auto-fix linting issues:
+### Database Migrations
+
 ```bash
-npm run lint:fix
+cd backend
+alembic revision --autogenerate -m "Description"
+alembic upgrade head
 ```
 
-Format code:
-```bash
-npm run format
-```
+## Documentation
 
-### Building
-
-Build the project:
-```bash
-npm run build
-```
-
-## API Integration
-
-### Backend Webhooks
-
-The bot expects webhooks from the backend API for real-time notifications:
-
-**Payment Notification:**
-```json
-POST /webhook/notifications
-{
-  "type": "payment",
-  "data": {
-    "userId": 123,
-    "amount": 1.5,
-    "transactionHash": "0x..."
-  }
-}
-```
-
-**Equipment Offline:**
-```json
-POST /webhook/notifications
-{
-  "type": "equipment_offline",
-  "data": {
-    "userId": 123,
-    "deviceId": "gpu-001",
-    "lastSeen": "2025-11-30T10:00:00Z"
-  }
-}
-```
-
-**Equipment Error:**
-```json
-POST /webhook/notifications
-{
-  "type": "equipment_error",
-  "data": {
-    "userId": 123,
-    "deviceId": "gpu-001",
-    "error": "Temperature too high"
-  }
-}
-```
-
-### Backend API Endpoints
-
-The bot expects these endpoints from the backend API:
-
-- `GET /users/{userId}/stats` - Get user mining statistics
-- `GET /users/{userId}/payments` - Get user payment history
-- `GET /users/{userId}/equipment` - Get user equipment status
-- `POST /webhooks/register` - Register webhook URL
-
-## Security Considerations
-
-- Bot token and API keys are stored in environment variables
-- User data is securely stored in the database
-- All API communications use HTTPS in production
-- Webhook endpoints validate request authenticity
-- User inputs are validated and sanitized
-
-## Support
-
-- Telegram: [@xlab_tg](https://t.me/xlab_tg)
-- Website: [https://cocoon.org](https://cocoon.org)
-- Issues: [GitHub Issues](https://github.com/xlabtg/cocoon-gpu-pool/issues)
-
-## License
-
-MIT
+- [Setup Guide](docs/SETUP.md) - Installation and configuration
+- [API Documentation](docs/API.md) - REST API reference
+- [Architecture](ARCHITECTURE.md) - System architecture overview
 
 ## Contributing
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Contributions are welcome! Please read our contributing guidelines before submitting PRs.
+
+## Support
+
+- **Telegram Community**: [t.me/xlab_tg](https://t.me/xlab_tg)
+- **Documentation**: [cocoon.org/gpu-owners](https://cocoon.org/gpu-owners)
+- **Issues**: [GitHub Issues](https://github.com/xlabtg/cocoon-gpu-pool/issues)
+
+## License
+
+MIT License - see [LICENSE](LICENSE) file for details.
+
+## Acknowledgments
+
+- Built for the [Cocoon Network](https://cocoon.org)
+- Powered by TON Blockchain
+- Monitoring with Prometheus & Grafana
