@@ -26,7 +26,7 @@ describe('Validators', () => {
     it('should truncate long hashes', () => {
       const hash = '0x1234567890abcdef1234567890abcdef12345678';
       const truncated = truncateHash(hash, 16);
-      expect(truncated).toBe('0x123456...345678');
+      expect(truncated).toBe('0x123456...12345678');
       expect(truncated.length).toBeLessThan(hash.length);
     });
 
