@@ -1,0 +1,357 @@
+#include "imports/stdlib.fc";
+#include "utils.fc";
+#include "opcodes.fc";
+
+(slice, int, slice, int, int, int, int, cell) load_data() impure inline {
+  return unpack_cocoon_proxy_data(get_data().begin_parse());
+}
+
+() save_data (slice owner_address, int proxy_public_key, slice root_address, int state, int balance, int stake, int unlock_ts, cell params) impure inline {
+  set_data(pack_cocoon_proxy_data(owner_address, proxy_public_key, root_address, state, balance, stake, unlock_ts, params));
+}
+
+(int, int, int, int ) close_proxy(int state, int unlock_ts, int balance, int stake, int query_id, slice owner_address, cell params, slice send_excesses_to,
+                                  int to_leave_on_balance) impure {
+
+  if (state == proxy_state_normal) {
+
+    raw_reserve(to_leave_on_balance, 0);
+
+    (int params_version, int unique_id, int is_test, int price_per_token,
+     int worker_fee_per_token, int prompt_tokens_price_multiplier, int cached_tokens_price_multiplier, 
+     int completion_tokens_price_multiplier, int reasoning_tokens_price_multiplier,
+     int proxy_delay_before_close, int client_delay_before_close, int min_proxy_stake, int min_client_stake,
+     cell proxy_sc_code, cell worker_sc_code, cell client_sc_code) = unpack_cocoon_params(params);
+
+    forward_excesses(send_excesses_to, query_id);
+
+    return (proxy_state_closing, now() + proxy_delay_before_close, balance, stake);
+
+  } elseif (state == proxy_state_closing) {
+
+    throw_unless(error::not_unlocked_yet, now() >= unlock_ts);
+
+    raw_reserve(STORAGE_ESTIMATE, 0);
+
+    builder msg = create_msg(NON_BOUNCEABLE, owner_address, 0)
+          .store_uint(op::payout, 32) ;; op
+          .store_uint(query_id, 64); ;; query_id
+    send_raw_message(msg.end_cell(), SEND_MODE_CARRY_ALL_BALANCE);
+
+    return (proxy_state_closed, 0, 0, 0);
+
+  } else {
+
+    throw(error::closed);
+
+    return (proxy_state_closed, 0, 0, 0);
+
+  }
+
+}
+
+() recv_internal(int my_balance, int msg_value, cell in_msg_full, slice in_msg_body) impure {
+  if (in_msg_body.slice_empty?()) { ;; ignore empty messages
+      return ();
+  }
+
+  int to_leave_on_balance = max(my_balance - msg_value + my_storage_due(), STORAGE_ESTIMATE);
+
+  slice cs = in_msg_full.begin_parse();
+  int flags = cs~load_uint(4);
+
+  if (flags & 1) { ;; ignore all bounced messages
+      return ();
+  }
+  slice sender_address = cs~load_msg_addr();
+
+  int op = in_msg_body~load_uint(32);
+  if (op == op::do_not_process) {
+    return ();
+  }
+    
+  int query_id = 0;
+
+  if (op != 0) {
+    query_id = in_msg_body~load_uint(64);
+  }
+
+
+  (slice owner_address, int proxy_public_key, slice root_address, int state, int balance, int stake, int unlock_ts, cell params) = load_data();
+
+  if (op == op::worker_proxy_request) {
+
+    slice worker_owner_address = in_msg_body~load_msg_addr();
+    in_msg_body~skip_bits(66); ;; state + tokens
+
+    int has_payload = in_msg_body~load_uint(1);
+    if (has_payload == 0) {
+      in_msg_body.end_parse();
+      return ();
+    }
+
+    slice payload = in_msg_body~load_ref().begin_parse();
+    in_msg_body.end_parse();
+
+    (int params_version, int unique_id, int is_test, int price_per_token,
+     int worker_fee_per_token, int prompt_tokens_price_multiplier, int cached_tokens_price_multiplier, 
+     int completion_tokens_price_multiplier, int reasoning_tokens_price_multiplier,
+     int proxy_delay_before_close, int client_delay_before_close, int min_proxy_stake, int min_client_stake,
+     cell proxy_sc_code, cell worker_sc_code, cell client_sc_code) = unpack_cocoon_params(params);
+    cell worker_params = pack_cocoon_params(params_version, unique_id, is_test, price_per_token, worker_fee_per_token, 
+                                            prompt_tokens_price_multiplier, cached_tokens_price_multiplier, 
+                                            completion_tokens_price_multiplier, reasoning_tokens_price_multiplier,
+                                            proxy_delay_before_close, client_delay_before_close, min_proxy_stake, min_client_stake, 
+                                            null(), null(), null());
+    slice calculated_worker_address = calculate_cocoon_worker_address(worker_owner_address, my_address(), proxy_public_key, worker_params, worker_sc_code);
+    throw_unless(error::contract_address_mismatch, equal_slices_bits(sender_address, calculated_worker_address));
+
+    int op = payload~load_uint(32);
+
+    if (op == op::worker_proxy_payout_request) {
+
+      int coins_to_pay = payload~load_coins();
+      int coins_to_save = payload~load_coins();
+      slice send_excesses_to = payload~load_msg_addr();
+      payload.end_parse();
+
+      throw_if(error::closed, state == proxy_state_closed);
+
+      balance += coins_to_save;
+
+      raw_reserve(to_leave_on_balance - coins_to_pay, 0);
+
+      builder msg = create_msg(NON_BOUNCEABLE, worker_owner_address, coins_to_pay)
+            .store_uint(op::payout, 32) ;; op
+            .store_uint(query_id, 64); ;; query_id
+      send_raw_message(msg.end_cell(), SEND_MODE_PAY_FEES_SEPARETELY);
+
+      forward_excesses(send_excesses_to, query_id);
+
+    } else {
+
+      throw(error::unknown_op);
+
+    }
+
+  } elseif (op == op::client_proxy_request) {
+
+    slice client_owner_address = in_msg_body~load_msg_addr();
+    in_msg_body~load_ref(); ;; state + balance + tokens + secret_hash
+
+    int has_payload = in_msg_body~load_uint(1);
+    if (has_payload == 0) {
+      in_msg_body.end_parse();
+      return ();
+    }
+
+    slice payload = in_msg_body~load_ref().begin_parse();
+    in_msg_body.end_parse();
+
+    (int params_version, int unique_id, int is_test, int price_per_token,
+     int worker_fee_per_token, int prompt_tokens_price_multiplier, int cached_tokens_price_multiplier, 
+     int completion_tokens_price_multiplier, int reasoning_tokens_price_multiplier,
+     int proxy_delay_before_close, int client_delay_before_close, int min_proxy_stake, int min_client_stake,
+     cell proxy_sc_code, cell worker_sc_code, cell client_sc_code) = unpack_cocoon_params(params);
+    cell client_params = pack_cocoon_params(params_version, unique_id, is_test, price_per_token, worker_fee_per_token, 
+                                            prompt_tokens_price_multiplier, cached_tokens_price_multiplier, 
+                                            completion_tokens_price_multiplier, reasoning_tokens_price_multiplier,
+                                            proxy_delay_before_close, client_delay_before_close, min_proxy_stake, min_client_stake, 
+                                            null(), null(), null());
+    slice calculated_client_address = calculate_cocoon_client_address(client_owner_address, my_address(), proxy_public_key, min_client_stake, client_params, client_sc_code);
+    throw_unless(error::contract_address_mismatch, equal_slices_bits(sender_address, calculated_client_address));
+
+    int op = payload~load_uint(32);
+
+    if (op == op::client_proxy_top_up) {
+
+      int top_up_coins = payload~load_coins();
+      slice send_excesses_to = payload~load_msg_addr();
+      payload.end_parse();
+
+      if (state == proxy_state_normal) {
+
+        raw_reserve(to_leave_on_balance + top_up_coins, 0);
+
+      } else {
+
+        raw_reserve(to_leave_on_balance, 0);
+
+        builder msg = create_msg(NON_BOUNCEABLE, client_owner_address, top_up_coins)
+              .store_uint(op::payout, 32) ;; op
+              .store_uint(query_id, 64); ;; query_id
+        send_raw_message(msg.end_cell(), SEND_MODE_REGULAR);
+
+      }
+
+      forward_excesses(send_excesses_to, query_id);
+
+    } elseif (op == op::client_proxy_register) {
+
+      return (); ;; do not check, nothing to do here
+
+    } elseif (op == op::client_proxy_refund_granted) {
+
+      int coins = payload~load_coins();
+      slice send_excesses_to = payload~load_msg_addr();
+      payload.end_parse();
+
+      throw_if(error::closed, state == proxy_state_closed);
+
+      raw_reserve(to_leave_on_balance - coins, 0);
+
+      builder msg = create_msg(NON_BOUNCEABLE, client_owner_address, coins)
+            .store_uint(op::payout, 32) ;; op
+            .store_uint(query_id, 64); ;; query_id
+      send_raw_message(msg.end_cell(), SEND_MODE_PAY_FEES_SEPARETELY);
+
+      forward_excesses(send_excesses_to, query_id);
+
+    } elseif (op == op::client_proxy_refund_force) {
+
+      int coins = payload~load_coins();
+      slice send_excesses_to = payload~load_msg_addr();
+      payload.end_parse();
+
+      throw_if(error::closed, state == proxy_state_closed);
+
+      if (coins > stake) {
+        coins = stake;
+      }
+      stake -= coins;
+
+      raw_reserve(to_leave_on_balance - coins, 0);
+
+      builder msg = create_msg(NON_BOUNCEABLE, client_owner_address, coins)
+            .store_uint(op::payout, 32) ;; op
+            .store_uint(query_id, 64); ;; query_id
+      send_raw_message(msg.end_cell(), SEND_MODE_PAY_FEES_SEPARETELY);
+
+      forward_excesses(send_excesses_to, query_id);
+
+    } else {
+
+      throw(error::unknown_op);
+
+    }
+
+  } elseif (op == op::ext_proxy_payout_request) {
+
+    slice send_excesses_to = in_msg_body~load_msg_addr();
+    in_msg_body.end_parse();
+
+    throw_unless(error::low_msg_value, msg_value >= COMMISSION_ESTIMATE);
+    throw_if(error::closed, state == proxy_state_closed);
+
+    raw_reserve(to_leave_on_balance - balance, 0);
+
+    builder msg = create_msg(NON_BOUNCEABLE, owner_address, balance)
+          .store_uint(op::payout, 32) ;; op
+          .store_uint(query_id, 64); ;; query_id
+    send_raw_message(msg.end_cell(), SEND_MODE_PAY_FEES_SEPARETELY);
+
+    balance = 0;
+
+    forward_excesses(send_excesses_to, query_id);
+
+  } elseif (op == op::ext_proxy_increase_stake) {
+
+    int grams = in_msg_body~load_coins();
+    slice send_excesses_to = in_msg_body~load_msg_addr();
+    in_msg_body.end_parse();
+
+    throw_unless(error::low_msg_value, msg_value >= COMMISSION_ESTIMATE + grams);
+    throw_if(error::closed, state == proxy_state_closed);
+
+    stake += grams;
+    raw_reserve(to_leave_on_balance + grams, 0);
+
+    forward_excesses(send_excesses_to, query_id);
+
+  } elseif (op == op::ext_proxy_close_request_signed) {
+
+    [slice payload, slice send_excesses_to] = signed_message_unpack_and_check_signature(in_msg_body, op, query_id, proxy_public_key);
+    slice expected_my_address = payload~load_msg_addr();
+    payload.end_parse();
+
+    throw_unless(error::low_msg_value, msg_value >= COMMISSION_ESTIMATE);
+    throw_unless(error::closed, state == proxy_state_normal);
+    throw_unless(error::expected_my_address, equal_slices_bits(expected_my_address, my_address()));
+
+    (state, unlock_ts, balance, stake) = close_proxy(state, unlock_ts, balance, stake, query_id, owner_address, params, send_excesses_to, to_leave_on_balance);
+
+  } elseif (op == op::ext_proxy_close_complete_request_signed) {
+
+    [slice payload, slice send_excesses_to] = signed_message_unpack_and_check_signature(in_msg_body, op, query_id, proxy_public_key);
+    slice expected_my_address = payload~load_msg_addr();
+    payload.end_parse();
+
+    throw_unless(error::low_msg_value, msg_value >= COMMISSION_ESTIMATE);
+    throw_unless(error::closed, state == proxy_state_closing);
+    throw_unless(error::expected_my_address, equal_slices_bits(expected_my_address, my_address()));
+
+    (state, unlock_ts, balance, stake) = close_proxy(state, unlock_ts, balance, stake, query_id, owner_address, params, send_excesses_to, to_leave_on_balance);
+
+  } elseif (op == op::owner_proxy_close) {
+
+    slice send_excesses_to = in_msg_body~load_msg_addr();
+    in_msg_body.end_parse();
+
+    throw_unless(error::low_msg_value, msg_value >= COMMISSION_ESTIMATE);
+    throw_unless(error::closed, state == proxy_state_normal);
+    throw_unless(error::expected_message_from_owner, equal_slices_bits(sender_address, owner_address));
+
+    (state, unlock_ts, balance, stake) = close_proxy(state, unlock_ts, balance, stake, query_id, owner_address, params, send_excesses_to, to_leave_on_balance);
+
+  } elseif (op == 0) {
+
+    int action = in_msg_body~load_uint(8);
+    in_msg_body.end_parse();
+
+    if (action == "c"u) {
+
+      throw_unless(error::low_msg_value, msg_value >= COMMISSION_ESTIMATE);
+      throw_unless(error::closed, state == proxy_state_normal);
+      throw_unless(error::expected_message_from_owner, equal_slices_bits(sender_address, owner_address));
+
+      (state, unlock_ts, balance, stake) = close_proxy(state, unlock_ts, balance, stake, query_id, owner_address, params, owner_address, to_leave_on_balance);
+
+    } elseif (action == "w"u) {
+
+      throw_unless(error::low_msg_value, msg_value >= COMMISSION_ESTIMATE);
+      throw_if(error::closed, state == proxy_state_closed);
+      throw_unless(error::expected_message_from_owner, equal_slices_bits(sender_address, owner_address));
+
+      raw_reserve(to_leave_on_balance - balance, 0);
+      balance = 0;
+
+      builder msg = create_msg(NON_BOUNCEABLE, owner_address, balance)
+            .store_uint(op::payout, 32) ;; op
+            .store_uint(query_id, 64); ;; query_id
+      send_raw_message(msg.end_cell(), SEND_MODE_CARRY_ALL_BALANCE);
+
+    } else {
+
+      throw(error::unknown_text_op);
+
+    }
+
+  } else {
+
+    throw(error::unknown_op);
+
+  }
+
+  save_data(owner_address, proxy_public_key, root_address, state, balance, stake, unlock_ts, params);
+
+}
+
+(slice, int, slice, int, int, int, int, int, int, int, int, int) get_cocoon_proxy_data() method_id {
+  (slice owner_address, int proxy_public_key, slice root_address, int state, int balance, int stake, int unlock_ts, cell params) = load_data();
+  (int params_version, int unique_id, int is_test, int price_per_token,
+   int worker_fee_per_token, int prompt_tokens_price_multiplier, int cached_tokens_price_multiplier, 
+   int completion_tokens_price_multiplier, int reasoning_tokens_price_multiplier,
+   int proxy_delay_before_close, int client_delay_before_close, int min_proxy_stake, int min_client_stake,
+   cell proxy_sc_code, cell worker_sc_code, cell client_sc_code) = unpack_cocoon_params(params);
+  return (owner_address, proxy_public_key, root_address, state, balance, stake, unlock_ts, price_per_token, worker_fee_per_token, min_proxy_stake, min_client_stake, params_version);
+}
